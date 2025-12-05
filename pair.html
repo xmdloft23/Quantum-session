@@ -46,13 +46,6 @@
       100% { background-position: 0% 50%; }
     }
 
-    .bg-audio {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      z-index: 1000;
-    }
-
     .container {
       width: 96%;
       max-width: 480px;
@@ -141,11 +134,6 @@
     .telegram { background: #0088cc; }
     .whatsapp { background: #25d366; }
     .github { background: #333; }
-
-    .login-screen, .main-app { display: none; }
-    .login-screen.active, .main-app.active { display: block; animation: fadeIn 0.6s; }
-
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
 
     .input-group {
       margin: 20px 0;
@@ -254,42 +242,54 @@
 
     .error { color: #ff5555; }
     .success { color: var(--accent); }
+
+    /* Music control button */
+    .music-control {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(0, 255, 204, 0.2);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      font-size: 24px;
+      cursor: pointer;
+      z-index: 999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(10px);
+    }
   </style>
 </head>
 <body>
 
+  <!-- Background Music - Zinaanza Moja kwa Moja & Full Volume -->
   <audio id="bgMusic" loop autoplay>
-    <source src="loftt.mp3" type="audio/mpeg">
-    <source src="loft.mp3" type="audio/mpeg">
-    <source src="loft.mp3" type="audio/mpeg">
-    <source src="loft.mp3" type="audio/mpeg">
+    <!-- Badilisha link hii na yako ya moja kwa moja (mp3 raw link) -->
+    <source src="https://github.com/mruniquehacker/Knightbot-md/raw/main/loft.mp3" type="audio/mpeg">
+    Your browser does not support the audio element.
   </audio>
 
+  <!-- Music Play/Pause Button -->
+  <div class="music-control" id="musicBtn">
+    <i class="fas fa-volume-up"></i>
+  </div>
+
   <div class="container">
+
     <button class="theme-toggle" id="themeToggle">
       <i class="fas fa-moon"></i>
     </button>
 
-    <!-- LOGIN SCREEN -->
-    <div class="login-screen active" id="loginScreen">
+    <!-- MAIN APP - Sasa inaanza direct bila login -->
+    <div class="main-app active" id="mainApp">
       <div class="header">
         <div class="logo"><i class="fas fa-robot"></i></div>
         <h1 class="title">ʟᴏꜰᴛ Qᴜᴀɴᴛᴜᴍ™</h1>
-        <p class="subtitle">Elite WhatsApp Pairing Tool</p>
-      </div>
-      <div class="input-group">
-        <input type="text" class="input-field" id="githubUser" placeholder="Enter your GitHub username" autocomplete="off">
-      </div>
-      <button class="btn btn-primary" id="loginBtn">Enter System</button>
-      <p style="text-align:center; margin-top:15px; font-size:13px;" id="loginMsg"></p>
-    </div>
-
-    <!-- MAIN APP -->
-    <div class="main-app" id="mainApp">
-      <div class="header">
-        <div class="logo"><i class="fas fa-robot"></i></div>
-        <h1 class="title">ʟᴏꜰᴛ Qᴜᴀɴᴛᴜᴍ™</h1>
-        <p class="subtitle">Link your WhatsApp device</p>
+        <p class="subtitle">Link your WhatsApp device - Full Access</p>
         <div class="socials">
           <a href="https://www.youtube.com/@mr_unique_hacker?sub_confirmation=1" class="youtube"><i class="fab fa-youtube"></i></a>
           <a href="https://t.me/+hxojkc7kaVViYzdl" class="telegram"><i class="fab fa-telegram-plane"></i></a>
@@ -322,21 +322,31 @@
         Copy Code
       </button>
 
-      <div class="footer">© 2026 | ʟᴏꜰᴛ Qᴜᴀɴᴛᴜᴍ™ - Elite Edition</div>
+      <div class="footer">© 2026 | ʟᴏꜰᴛ Qᴜᴀɴᴛᴜᴍ™ - Elite Edition By Mr Unique</div>
     </div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.7.2/axios.min.js"></script>
   <script>
-    const songs = [
-      "loft.mp3",
-      "loft.mp3",
-      "loft.mp3",
-      "loft.mp3"
-    ];
+    // Music Control - Full Volume & Auto Play Fix
     const audio = document.getElementById("bgMusic");
-    audio.src = songs[Math.floor(Math.random() * songs.length)];
-    audio.volume = 0.2;
+    const musicBtn = document.getElementById("musicBtn");
+    audio.volume = 0.8; // Full volume
+
+    // Fix autoplay (user interaction inayohitajika)
+    document.body.addEventListener('click', function() {
+      audio.play().catch(e => console.log("Autoplay blocked"));
+    }, { once: true });
+
+    musicBtn.addEventListener('click', () => {
+      if (audio.paused) {
+        audio.play();
+        musicBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
+      } else {
+        audio.pause();
+        musicBtn.innerHTML = '<i class="fas fa-volume-mute"></i>';
+      }
+    });
 
     // Theme toggle
     document.getElementById("themeToggle").addEventListener("click", () => {
@@ -347,27 +357,7 @@
       document.querySelector("#themeToggle i").classList.toggle("fa-moon", isLight);
     });
 
-    // GitHub login check
-    document.getElementById("loginBtn").addEventListener("click", async () => {
-      const username = document.getElementById("githubUser").value.trim();
-      const msg = document.getElementById("loginMsg");
-      if (!username) {
-        msg.innerHTML = "<span class='error'>Username required</span>";
-        return;
-      }
-
-      try {
-        const res = await axios.get(`https://api.github.com/users/${username}`);
-        if (res.status === 200) {
-          document.getElementById("loginScreen").classList.remove("active");
-          document.getElementById("mainApp").classList.add("active");
-        }
-      } catch (err) {
-        msg.innerHTML = "<span class='error'>GitHub user not found</span>";
-      }
-    });
-
-    // Toggle mode
+    // Toggle Pair / QR
     document.querySelectorAll(".toggle-btn").forEach(btn => {
       btn.addEventListener("click", function() {
         document.querySelectorAll(".toggle-btn").forEach(b => b.classList.remove("active"));
@@ -383,7 +373,7 @@
       });
     });
 
-    // Generate pair code
+    // Generate Pair Code
     document.getElementById("generateBtn").addEventListener("click", async () => {
       const num = document.getElementById("mobileNumber").value.trim().replace(/[^0-9+]/g, "");
       const result = document.getElementById("resultBox");
@@ -420,9 +410,9 @@
     async function generateQR() {
       const result = document.getElementById("resultBox");
       const qrBox = document.getElementById("qrBox");
-      const loading = document.getElementById("loading");
+      const shall = document.getElementById("loading");
 
-      loading.style.display = "block";
+      shall.style.display = "block";
       result.style.display = "none";
 
       try {
@@ -435,7 +425,7 @@
         result.innerHTML = "<span class='error'>QR generation failed</span>";
         result.style.display = "block";
       } finally {
-        loading.style.display = "none";
+        shall.style.display = "none";
       }
     }
   </script>
