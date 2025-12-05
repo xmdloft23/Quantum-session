@@ -1,285 +1,225 @@
 import express from 'express';
 import fs from 'fs';
 import pino from 'pino';
-import { makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore, Browsers, jidNormalizedUser, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
-import { delay } from '@whiskeysockets/baileys';
+import {
+    makeWASocket,
+    useMultiFileAuthState,
+    makeCacheableSignalKeyStore,
+    Browsers,
+    jidNormalizedUser,
+    fetchLatestBaileysVersion,
+    DisconnectReason
+} from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import qrcodeTerminal from 'qrcode-terminal';
 
 const router = express.Router();
 
-// Function to remove files or directories
-function removeFile(FilePath) {
-    try {
-        if (!fs.existsSync(FilePath)) return false;
-        fs.rmSync(FilePath, { recursive: true, force: true });
-        return true;
-    } catch (e) {
-        console.error('Error removing file:', e);
-        return false;
+// Utility: Remove directory safely
+const removeSession = (path) => {
+    if (fs.existsSync(path)) {
+        fs.rmSync(path, { recursive: true, force: true });
+        console.log(`🧹 Session folder removed: ${path}`);
     }
-}
+};
 
+// Main QR Route
 router.get('/', async (req, res) => {
-    // Generate unique session for each request to avoid conflicts
-    const sessionId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-    const dirs = `./qr_sessions/session_${sessionId}`;
+    const sessionId = `session_\( {Date.now()}_ \){Math.random().toString(36).substr(2, 9)}`;
+    const sessionDir = `./qr_sessions/${sessionId}`;
 
-    // Ensure qr_sessions directory exists
+    // Ensure base directory exists
     if (!fs.existsSync('./qr_sessions')) {
         fs.mkdirSync('./qr_sessions', { recursive: true });
     }
+    fs.mkdirSync(sessionDir, { recursive: true });
 
-    async function initiateSession() {
-        // ✅ PERMANENT FIX: Create the session folder before anything
-        if (!fs.existsSync(dirs)) fs.mkdirSync(dirs, { recursive: true });
+    let socket = null;
+    let qrSent = false;
+    let connectionSuccess = false;
 
-        const { state, saveCreds } = await useMultiFileAuthState(dirs);
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        const { version } = await fetchLatestBaileysVersion();
 
-        try {
-            const { version, isLatest } = await fetchLatestBaileysVersion();
-            
-            let qrGenerated = false;
-            let responseSent = false;
+        const sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            browser: Browsers.windows('Chrome'),
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
+            },
+            printQRInTerminal: false,
+            markOnlineOnConnect: false,
+            generateHighQualityLinkPreview: false,
+            syncFullHistory: false,
+            connectTimeoutMs: 60_000,
+            defaultQueryTimeoutMs: 60_000,
+            keepAliveIntervalMs: 30_000,
+        });
 
-            // QR Code handling logic
-            const handleQRCode = async (qr) => {
-                if (qrGenerated || responseSent) return;
-                
-                qrGenerated = true;
-                console.log('🟢 QR Code Generated! Scan it with your WhatsApp app.');
-                console.log('📋 Instructions:');
-                console.log('1. Open WhatsApp on your phone');
-                console.log('2. Go to Settings > Linked Devices');
-                console.log('3. Tap "Link a Device"');
-                console.log('4. Scan the QR code below');
-                // Display QR in terminal
-                //qrcodeTerminal.generate(qr, { small: true });
+        socket = sock;
+
+        // Handle QR Code
+        sock.ev.on('connection.update', async (update) => {
+            const { qr, connection, lastDisconnect } = update;
+
+            if (qr && !qrSent) {
+                qrSent = true;
                 try {
-                    // Generate QR code as data URL
-                    const qrDataURL = await QRCode.toDataURL(qr, {
+                    const qrImage = await QRCode.toDataURL(qr, {
                         errorCorrectionLevel: 'M',
-                        type: 'image/png',
-                        quality: 0.92,
-                        margin: 1,
-                        color: {
-                            dark: '#000000',
-                            light: '#FFFFFF'
-                        }
+                        margin: 2,
+                        scale: 8,
+                        color: { dark: '#000', light: '#fff' }
                     });
 
-                    if (!responseSent) {
-                        responseSent = true;
-                        console.log('QR Code generated successfully');
-                        await res.send({ 
-                            qr: qrDataURL, 
-                            message: 'QR Code Generated! Scan it with your WhatsApp app.',
-                            instructions: [
-                                '1. Open WhatsApp on your phone',
-                                '2. Go to Settings > Linked Devices',
-                                '3. Tap "Link a Device"',
-                                '4. Scan the QR code above'
-                            ]
-                        });
-                    }
-                } catch (qrError) {
-                    console.error('Error generating QR code:', qrError);
-                    if (!responseSent) {
-                        responseSent = true;
-                        res.status(500).send({ code: 'Failed to generate QR code' });
-                    }
+                    qrcodeTerminal.generate(qr, { small: true });
+                    console.log('📱 New QR Generated → Scan Now!');
+
+                    res.json({
+                        success: true,
+                        qr: qrImage,
+                        sessionId,
+                        message: "Scan this QR code with WhatsApp → Linked Devices",
+                        instructions: [
+                            "Open WhatsApp on your phone",
+                            "Go to Settings → Linked Devices",
+                            "Tap 'Link a Device'",
+                            "Point your camera at this QR code"
+                        ]
+                    });
+                } catch (err) {
+                    console.error('QR Generation Failed:', err);
+                    if (!res.headersSent) res.status(500).json({ error: "Failed to generate QR" });
                 }
-            };
-
-            // Improved Baileys socket configuration
-            const socketConfig = {
-                version,
-                logger: pino({ level: 'silent' }),
-                browser: Browsers.windows('Chrome'), // Using Browsers enum for better compatibility
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
-                },
-                markOnlineOnConnect: false, // Disable to reduce connection issues
-                generateHighQualityLinkPreview: false, // Disable to reduce connection issues
-                defaultQueryTimeoutMs: 60000, // Increase timeout
-                connectTimeoutMs: 60000, // Increase connection timeout
-                keepAliveIntervalMs: 30000, // Keep connection alive
-                retryRequestDelayMs: 250, // Retry delay
-                maxRetries: 5, // Maximum retries
-            };
-
-            // Create socket and bind events
-            let sock = makeWASocket(socketConfig);
-            let reconnectAttempts = 0;
-            const maxReconnectAttempts = 3;
-
-            // Connection event handler function
-            const handleConnectionUpdate = async (update) => {
-                const { connection, lastDisconnect, qr } = update;
-                console.log(`🔄 Connection update: ${connection || 'undefined'}`);
-
-                if (qr && !qrGenerated) {
-                    await handleQRCode(qr);
-                }
-
-                if (connection === 'open') {
-                    console.log('✅ Connected successfully!');
-                    console.log('💾 Session saved to:', dirs);
-                    reconnectAttempts = 0; // Reset reconnect attempts on successful connection
-                    
-                    try {
-                        
-                        
-                        // Read the session file
-                        const sessionKnight = fs.readFileSync(dirs + '/creds.json');
-                        
-                        // Get the user's JID from the session
-                        const userJid = Object.keys(sock.authState.creds.me || {}).length > 0 
-                            ? jidNormalizedUser(sock.authState.creds.me.id) 
-                            : null;
-                            
-                        if (userJid) {
-                            // Send session file to user
-                            await sock.sendMessage(userJid, {
-                                document: sessionKnight,
-                                mimetype: 'application/json',
-                                fileName: 'creds.json'
-                            });
-                            console.log("📄 Session file sent successfully to", userJid);
-                            
-                                                                                  await sock.sendMessage(userJid, {
-    image: { url: 'loft.jpg' },
-    caption: `🔥 *Welcome to LoftBase MD V2.0 – The King is Here!* 🔥\n\n`
-           + `🎉 Congratulations! You just joined the most powerful bot family!\n`
-           + `🚀 We are now *CONNECTED FOREVER* – I’m with you 24/7\n\n`
-           + `💡 *What’s New in V2.0?*\n`
-           + `✦ Lightning-fast AI chat\n`
-           + `✦ Brand new fun & useful commands\n`
-           + `✦ All bugs destroyed!\n\n`
-           + `🎵 Enjoy this vibe while we start our journey together 🎶\n\n`
-           + `👑 *We are connected forever. Let’s rule WhatsApp together!*`
-}, { quoted: m });
-
-console.log("Image + epic caption sent");
-
-// 2. Send short cool background music (30–40 seconds, perfect size)
-await sock.sendMessage(userJid, {
-    audio: { 
-        url: 'roft.mp3' // ← super clean welcome beat (direct link)
-    },
-    mimetype: 'audio/mp4',
-    ptt: false,                    // false = normal audio | true = voice note style
-    waveform: [10,40,80,100,90,70,90,50,80,30,90,20,100]
-}, { quoted: m });
-
-console.log("Cool music sent");
-
-// 3. Final warm message + light warning
-await sock.sendMessage(userJid, {
-    text: `💜 *We are now connected forever!* 💜\n\n`
-         + `Enjoy the bot to the maximum, but *never share* the session file with anyone – keep your account safe 🙏\n\n`
-         + `┌┤✑  Thank you for using LoftBase MD V2.0\n`
-         + `│©2026 ʟᴏꜰᴛ Qᴜᴀɴᴛᴜᴍ™\n`
-         + `└─────────────────┈ ⳹\n\n`
-         + `💬 Need help? Just type: *.menu* or *.help* anytime`
-});
-                    
-                    // Clean up session after successful connection and sending files
-                    setTimeout(() => {
-                        console.log('🧹 Cleaning up session...');
-                        const deleted = removeFile(dirs);
-                        if (deleted) {
-                            console.log('✅ Session cleaned up successfully');
-                        } else {
-                            console.log('❌ Failed to clean up session folder');
-                        }
-                    }, 15000); // Wait 15 seconds before cleanup to ensure messages are sent
-                }
-
-                if (connection === 'close') {
-                    console.log('❌ Connection closed');
-                    if (lastDisconnect?.error) {
-                        console.log('❗ Last Disconnect Error:', lastDisconnect.error);
-                    }
-                    
-                    const statusCode = lastDisconnect?.error?.output?.statusCode;
-                    
-                    // Handle specific error codes
-                    if (statusCode === 401) {
-                        console.log('🔐 Logged out - need new QR code');
-                        removeFile(dirs);
-                    } else if (statusCode === 515 || statusCode === 503) {
-                        console.log(`🔄 Stream error (${statusCode}) - attempting to reconnect...`);
-                        reconnectAttempts++;
-                        
-                        if (reconnectAttempts <= maxReconnectAttempts) {
-                            console.log(`🔄 Reconnect attempt ${reconnectAttempts}/${maxReconnectAttempts}`);
-                            // Wait a bit before reconnecting
-                            setTimeout(() => {
-                                try {
-                                    sock = makeWASocket(socketConfig);
-                                    sock.ev.on('connection.update', handleConnectionUpdate);
-                                    sock.ev.on('creds.update', saveCreds);
-                                } catch (err) {
-                                    console.error('Failed to reconnect:', err);
-                                }
-                            }, 2000);
-                        } else {
-                            console.log('❌ Max reconnect attempts reached');
-                            if (!responseSent) {
-                                responseSent = true;
-                                res.status(503).send({ code: 'Connection failed after multiple attempts' });
-                            }
-                        }
-                    } else {
-                        console.log('🔄 Connection lost - attempting to reconnect...');
-                        // Let it reconnect automatically
-                    }
-                }
-            };
-
-            // Bind the event handler
-            sock.ev.on('connection.update', handleConnectionUpdate);
-
-            sock.ev.on('creds.update', saveCreds);
-
-            // Set a timeout to clean up if no QR is generated
-            setTimeout(() => {
-                if (!responseSent) {
-                    responseSent = true;
-                    res.status(408).send({ code: 'QR generation timeout' });
-                    removeFile(dirs);
-                }
-            }, 30000); // 30 second timeout
-
-        } catch (err) {
-            console.error('Error initializing session:', err);
-            if (!res.headersSent) {
-                res.status(503).send({ code: 'Service Unavailable' });
             }
-            removeFile(dirs);
+
+            if (connection === 'open') {
+                connectionSuccess = true;
+                console.log('✅ WhatsApp Connected Successfully!');
+
+                const userJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+                if (!userJid) {
+                    console.log('⚠️ User JID not found yet, delaying messages...');
+                    setTimeout(() => sendWelcomeMessages(sock, sessionDir), 5000);
+                } else {
+                    sendWelcomeMessages(sock, sessionDir, userJid);
+                }
+            }
+
+            if (connection === 'close') {
+                const reason = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = reason !== DisconnectReason.loggedOut;
+
+                console.log(`Connection closed: ${reason || 'Unknown'}`);
+
+                if (reason === DisconnectReason.loggedOut) {
+                    console.log('Logged out – deleting session');
+                    removeSession(sessionDir);
+                }
+
+                if (!connectionSuccess && !res.headersSent) {
+                    res.status(500).json({ error: 'Connection failed or closed unexpectedly' });
+                }
+
+                if (shouldReconnect) {
+                    setTimeout(() => sock.ws.connect(), 3000);
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        // Auto cleanup after 60 seconds if not connected
+        setTimeout(() => {
+            if (!connectionSuccess && !qrSent) {
+                res.status(408).json({ error: "QR timeout – no scan detected" });
+            }
+            if (!connectionSuccess) {
+                sock?.end();
+                removeSession(sessionDir);
+            }
+        }, 60_000);
+
+    } catch (error) {
+        console.error('Socket Initialization Error:', error);
+        removeSession(sessionDir);
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to start WhatsApp session" });
         }
     }
-
-    await initiateSession();
 });
 
-// Global uncaught exception handler
-process.on('uncaughtException', (err) => {
-    let e = String(err);
-    if (e.includes("conflict")) return;
-    if (e.includes("not-authorized")) return;
-    if (e.includes("Socket connection timeout")) return;
-    if (e.includes("rate-overlimit")) return;
-    if (e.includes("Connection Closed")) return;
-    if (e.includes("Timed Out")) return;
-    if (e.includes("Value not found")) return;
-    if (e.includes("Stream Errored")) return;
-    if (e.includes("Stream Errored (restart required)")) return;
-    if (e.includes("statusCode: 515")) return;
-    if (e.includes("statusCode: 503")) return;
-    console.log('Caught exception: ', err);
+// Function to send session + epic welcome
+async function sendWelcomeMessages(sock, sessionDir, fallbackJid = null) {
+    try {
+        const userJid = fallbackJid || (sock.user?.id ? jidNormalizedUser(sock.user.id) : null);
+        if (!userJid) return console.log("No user JID found");
+
+        // Send session file
+        const credsPath = `${sessionDir}/creds.json`;
+        if (fs.existsSync(credsPath)) {
+            await sock.sendMessage(userJid, {
+                document: fs.readFileSync(credsPath),
+                mimetype: 'application/json',
+                fileName: 'creds.json'
+            });
+            console.log('Session file sent:', credsPath);
+        }
+
+        // Epic Welcome Image
+        await sock.sendMessage(userJid, {
+            image: { url: './media/loft.jpg' }, // Make sure this file exists
+            caption: `🔥 *Welcome to LoftBase MD V2.0 – The King is Here!* 🔥\n\n` +
+                     `🎉 Congratulations! You just joined the most powerful bot family!\n` +
+                     `🚀 We are now *CONNECTED FOREVER* – I’m with you 24/7\n\n` +
+                     `💡 *What’s New in V2.0?*\n` +
+                     `✦ Lightning-fast AI chat\n` +
+                     `✦ Brand new fun & useful commands\n` +
+                     `✦ All bugs destroyed!\n\n` +
+                     `🎵 Enjoy this vibe while we start our journey together 🎶\n\n` +
+                     `👑 *We are connected forever. Let’s rule WhatsApp together!*`
+        });
+
+        // Welcome Music
+        await sock.sendMessage(userJid, {
+            audio: { url: './media/roft.mp3' },
+            mimetype: 'audio/mp4',
+            ptt: false,
+            waveform: [10, 40, 80, 100, 90, 70, 90, 50, 80, 30, 90, 20, 100]
+        });
+
+        // Final Message
+        await sock.sendMessage(userJid, {
+            text: `💜 *We are now connected forever!* 💜\n\n` +
+                  `Enjoy the bot to the maximum, but *never share* the session file with anyone – keep your account safe 🙏\n\n` +
+                  `┌┤✑  Thank you for using LoftBase MD V2.0\n` +
+                  `│©2026 ʟᴏꜰᴛ Qᴜᴀɴᴛᴜᴍ™\n` +
+                  `└─────────────────┈ ⳹\n\n` +
+                  `💬 Need help? Just type: *.menu* or *.help* anytime`
+        });
+
+        console.log('All welcome messages sent successfully!');
+
+        // Cleanup after success
+        setTimeout(() => {
+            removeSession(sessionDir);
+            sock?.end();
+        }, 15_000);
+
+    } catch (err) {
+        console.error('Failed to send welcome messages:', err);
+    }
+}
+
+// Global error handling (optional but recommended)
+process.on('unhandledRejection', (err) => {
+    if (err?.message?.includes?.('rate-overlimit') || 
+        err?.message?.includes?.('conflict') || 
+        err?.message?.includes?.('timed out')) return;
+    console.error('Unhandled Rejection:', err);
 });
 
 export default router;
